@@ -38,7 +38,7 @@
   "scripts": {
     "build": "napi build --platform --release --dts index.d.ts",
     "build:debug": "napi build --platform --dts index.d.ts",
-    "test": "cargo test",
+    "test": "node __test__/index.spec.mjs",
     "artifacts": "napi artifacts"
   },
   "devDependencies": {

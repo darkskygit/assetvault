@@ -324,29 +324,3 @@ impl SearchIndex {
   }
 }
 
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn upsert_search_and_checkpoint_roundtrip() {
-    let mut index = SearchIndex::new(None).unwrap();
-    index
-      .upsert("a".into(), "{\"content\":\"你好世界 memory-indexer\"}".into())
-      .unwrap();
-
-    let result: serde_json::Value = serde_json::from_str(&index.search("nihao".into(), None).unwrap()).unwrap();
-    assert_eq!(result["total"], 1);
-    assert_eq!(result["hits"][0]["id"], "a");
-
-    let snapshot = index.checkpoint().unwrap();
-    let restored = SearchIndex::from_checkpoint(None, snapshot).unwrap();
-    assert_eq!(restored.len(), 1);
-  }
-
-  #[test]
-  fn unknown_field_is_rejected() {
-    let mut index = SearchIndex::new(None).unwrap();
-    assert!(index.upsert("a".into(), "{\"nope\":\"x\"}".into()).is_err());
-  }
-}

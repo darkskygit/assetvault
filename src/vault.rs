@@ -237,34 +237,3 @@ impl SqliteVault {
   }
 }
 
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn asset_and_snapshot_roundtrip() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("test.db");
-    let mut vault = SqliteVault::new(db.to_string_lossy().into_owned(), Some("t".into())).unwrap();
-
-    let hash = vault
-      .put_asset("k".into(), Buffer::from(b"hello world".to_vec()))
-      .unwrap();
-    assert_eq!(hash.len(), 64, "sha3-256 hex length");
-
-    let got = vault.get_asset("k".into()).unwrap().unwrap();
-    assert_eq!(got.to_vec(), b"hello world");
-    assert!(vault.has_asset("k".into()).unwrap());
-
-    vault
-      .put_snapshot("ws".into(), 7, Buffer::from(vec![1u8, 2, 3]))
-      .unwrap();
-    assert_eq!(
-      vault.get_snapshot("ws".into()).unwrap().unwrap().to_vec(),
-      vec![1u8, 2, 3]
-    );
-
-    assert!(vault.delete_asset("k".into()).unwrap());
-    assert!(vault.get_asset("k".into()).unwrap().is_none());
-  }
-}

@@ -94,3 +94,6 @@ jobs:
 
     - name: publish
       run: npm publish --provenance --access public
+      env:
+        # Remove this line to use OIDC Trusted Publishing instead.
+        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
