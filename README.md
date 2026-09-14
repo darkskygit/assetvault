@@ -42,7 +42,10 @@ index.markPersisted(index.sequence())
 
 // --- asset vault (shares your SQLite file) ---
 const vault = new SqliteVault('app.db', 'iv_main')
-const contentHash = vault.putAsset('provider:character:variant', Buffer.from(pngBytes))
+// Bytes are stored through the precomp2 pipeline (always on): deflate streams are
+// expanded and re-packed with zstd/lzma, so PNG/ZIP/PDF get smaller while reads
+// still return the original bytes.
+const contentHash = vault.putAsset('provider:character:variant', pngBytes, 'png')
 const same = vault.getAsset('provider:character:variant') // Buffer | null
 
 // index snapshot persisted next to assets
@@ -59,12 +62,16 @@ const restored = SearchIndex.fromCheckpoint(undefined, vault.getSnapshot('defaul
 | `i64` | integer, sortable |
 | `bool` | boolean, sortable |
 
+Every field also accepts `stored: true`. Stored fields are kept inside the index
+snapshot and returned by search; index-only fields cost nothing extra.
+
 Values are `string | integer | boolean | array of those`. Floats are rejected.
 
 ### Search options
 
-`{ field?, mode?: 'auto'|'exact'|'fuzzy'|'pinyin', limit?, offset?, highlight? }`
-`mode` defaults to `auto`.
+`{ field?, mode?: 'auto'|'exact'|'fuzzy'|'pinyin', limit?, offset?, highlight?, storedFields? }`
+`mode` defaults to `auto`. Set `storedFields: true` to get the stored values of
+matched documents back; ids and scores are returned otherwise.
 
 ## API
 
@@ -85,7 +92,7 @@ class SearchIndex {
 
 class SqliteVault {
   constructor(dbPath: string, namespace?: string)
-  putAsset(key: string, data: Buffer): string           // returns content hash (hex)
+  putAsset(key: string, data: Buffer, extension?: string): string  // returns content hash (hex)
   getAsset(key: string): Buffer | null
   hasAsset(key: string): boolean
   deleteAsset(key: string): boolean

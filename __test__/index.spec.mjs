@@ -65,6 +65,13 @@ assert.deepEqual(vault.listAssets(), ["provider:character:variant"]);
 vault.putSnapshot("ws", 7, snapshot);
 assert.equal(vault.getSnapshot("ws").length, snapshot.length);
 
+// precomp2 pipeline (always on): bytes must round-trip exactly whether or not a
+// transform applied — this payload is not a real PNG, so it stores as-is.
+const big = Buffer.alloc(200 * 1024);
+for (let i = 0; i < big.length; i++) big[i] = (i * 31 + (i >> 3)) & 0xff;
+assert.equal(vault.putAsset("provider:character:big", big, "png").length, 64);
+assert.equal(Buffer.compare(vault.getAsset("provider:character:big"), big), 0);
+
 assert.equal(vault.deleteAsset("provider:character:variant"), true);
 assert.equal(vault.getAsset("provider:character:variant"), null);
 
