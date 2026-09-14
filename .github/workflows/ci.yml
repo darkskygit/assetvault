@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ macos-14, windows-latest ]
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+
+    - name: cargo test
+      run: cargo test
+
+    - name: build native binding
+      run: npx --yes @napi-rs/cli@3 build --platform --release --dts index.d.ts
+
+    - name: smoke test binding
+      run: node -e "const m=require('./');const i=new m.SearchIndex();i.upsert('x',JSON.stringify({content:'你好世界 memory-indexer'}));const r=JSON.parse(i.search('nihao'));if(r.total!==1)throw new Error('search failed');const v=new m.SqliteVault('smoke.db','smoke');const h=v.putAsset('k',Buffer.from('hello'));if(v.getAsset('k').toString()!=='hello')throw new Error('vault failed');console.log('ok',Object.keys(m),h.slice(0,8));"

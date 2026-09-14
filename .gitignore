@@ -1,0 +1,14 @@
+# Rust
+/target
+
+# napi build output
+*.node
+index.js
+index.d.ts
+
+# npm
+/node_modules
+
+# OS / editor
+.DS_Store
+*.swp

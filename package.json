@@ -1,0 +1,50 @@
+{
+  "name": "assetvault",
+  "version": "0.1.0",
+  "description": "In-memory multilingual full-text index + SQLite content-addressed asset vault, as a Node native addon.",
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/darkskygit/assetvault.git"
+  },
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "*.node",
+    "README.md",
+    "LICENSE"
+  ],
+  "os": [
+    "darwin",
+    "win32"
+  ],
+  "cpu": [
+    "arm64",
+    "x64"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "napi": {
+    "binaryName": "assetvault",
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-pc-windows-msvc",
+      "aarch64-pc-windows-msvc"
+    ]
+  },
+  "scripts": {
+    "build": "napi build --platform --release --dts index.d.ts",
+    "build:debug": "napi build --platform --dts index.d.ts",
+    "test": "cargo test",
+    "artifacts": "napi artifacts"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.9.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

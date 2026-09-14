@@ -1,0 +1,96 @@
+name: Publish
+
+# Manual publish. Builds the three supported targets, merges the `.node`
+# binaries into the single package, and pushes to npm.
+#
+# Auth (choose ONE):
+#   A) Token (default, simplest):
+#      - create an npm "Granular Access Token" with read+write on this package
+#        (or a classic "Automation" token), see README/"Publishing".
+#      - add it as the repository secret  NPM_TOKEN
+#   B) Trusted Publishing (OIDC, no secret):
+#      - on npmjs.com -> package -> Settings -> Trusted Publisher, add this
+#        repository and workflow file name (publish.yml).
+#      - delete the NODE_AUTH_TOKEN env below; keep permissions.id-token: write.
+#
+# `npm publish --provenance` uses OIDC for build provenance in both cases.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "npm version to publish (e.g. 0.1.0). Blank = use package.json."
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: macos-14
+          target: aarch64-apple-darwin
+        - os: windows-latest
+          target: x86_64-pc-windows-msvc
+        - os: windows-latest
+          target: aarch64-pc-windows-msvc
+          cross: true
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+    - uses: Swatinem/rust-cache@v2
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+
+    - name: install cargo-xwin (windows arm64 cross build)
+      if: ${{ matrix.cross }}
+      run: cargo install cargo-xwin --locked
+
+    - name: build binding
+      shell: bash
+      run: >-
+        npx --yes @napi-rs/cli@3 build --platform --release --target ${{ matrix.target }} ${{ matrix.cross && '--cross-compile' || '' }} --dts index.d.ts
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: bindings-${{ matrix.target }}
+        path: "*.node"
+        if-no-files-found: error
+
+  publish:
+    name: publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        registry-url: "https://registry.npmjs.org"
+
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: bindings-*
+        path: bindings
+        merge-multiple: true
+
+    - name: collect .node files
+      shell: bash
+      run: |
+        cp bindings/*.node .
+        ls -la *.node
+
+    - name: set version
+      if: ${{ inputs.version != '' }}
+      run: npm version "${{ inputs.version }}" --no-git-tag-version
+
+    - name: publish
+      run: npm publish --provenance --access public
