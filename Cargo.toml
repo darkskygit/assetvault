@@ -4,7 +4,7 @@ edition      = "2024"
 keywords     = ["napi", "search", "fulltext", "sqlite", "asset"]
 license      = "AGPL-3.0-or-later"
 name         = "assetvault"
-repository   = "https://github.com/yourname/assetvault"
+repository   = "https://github.com/darkskygit/assetvault"
 rust-version = "1.85"
 version      = "0.1.0"
 

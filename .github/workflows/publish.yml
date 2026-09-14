@@ -50,6 +50,9 @@ jobs:
       with:
         node-version: 22
 
+    - name: install
+      run: npm install
+
     - name: install cargo-xwin (windows arm64 cross build)
       if: ${{ matrix.cross }}
       run: cargo install cargo-xwin --locked
@@ -57,7 +60,7 @@ jobs:
     - name: build binding
       shell: bash
       run: >-
-        npx --yes @napi-rs/cli@3 build --platform --release --target ${{ matrix.target }} ${{ matrix.cross && '--cross-compile' || '' }} --dts index.d.ts
+        npx --yes --package @napi-rs/cli@3 napi build --platform --release --target ${{ matrix.target }} ${{ matrix.cross && '--cross-compile' || '' }} --dts index.d.ts
 
     - uses: actions/upload-artifact@v4
       with:
