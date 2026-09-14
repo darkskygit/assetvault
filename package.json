@@ -1,6 +1,6 @@
 {
   "name": "assetvault",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "In-memory multilingual full-text index + SQLite content-addressed asset vault, as a Node native addon.",
   "license": "AGPL-3.0-or-later",
   "repository": {

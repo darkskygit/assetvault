@@ -5,7 +5,10 @@ use assetpack_core::{
   PipelineConfig, RusqliteStore, TransformDecoderRegistry, TransformSelector, build_recipe,
 };
 use assetpack_transform_precomp2::{default_decoders, default_specs};
-use napi::{Error, Result, bindgen_prelude::Buffer};
+use napi::{
+  Env, Error, Result, Task,
+  bindgen_prelude::{AsyncTask, Buffer},
+};
 use napi_derive::napi;
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -38,9 +41,9 @@ fn transform_selector(config: &FileTransformConfig) -> TransformSelector {
 }
 
 /**
- * Sniff the container format so the pipeline sees the same extension the caller
- * would have passed (`FileTransformConfig::default().allow_ext` is extension
- * based, and so is chunk compression).
+ * Sniff the container format so the pipeline sees the same extension the
+ * caller would have passed (`FileTransformConfig::default().allow_ext` is
+ * extension based, and so is chunk compression).
  */
 fn sniff_extension(bytes: &[u8]) -> Option<&'static str> {
   if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
@@ -74,6 +77,78 @@ fn file_hint(bytes: &[u8], extension: Option<&str>) -> FileHint {
   }
 }
 
+fn ensure_schema(conn: &Connection, namespace: &str) -> Result<()> {
+  RusqliteStore::from_connection_with_namespace(conn, namespace).map_err(nerr)?;
+  conn.execute_batch(&aux_schema(namespace)).map_err(nerr)?;
+  Ok(())
+}
+
+/// Run the transform pipeline and persist one asset atomically.
+fn write_asset(
+  conn: &Connection,
+  namespace: &str,
+  key: &str,
+  bytes: Vec<u8>,
+  extension: Option<&str>,
+) -> Result<String> {
+  let size = bytes.len();
+  let file_hash = Hash32::sha3_256(&bytes);
+  let hint = file_hint(&bytes, extension);
+  let config = FileTransformConfig::default();
+  let selector = transform_selector(&config);
+  let plan = Pipeline::new(PipelineConfig::default())
+    .run(bytes, &hint, file_hash, Some(&selector))
+    .map_err(nerr)?;
+
+  let chunk_list: Vec<(Hash32, u32)> = plan.chunks.iter().map(|chunk| (chunk.hash, chunk.raw_len)).collect();
+  let recipe = build_recipe(
+    plan.original_size,
+    &chunk_list,
+    file_hash,
+    plan.transform_id,
+    plan.transform_version,
+  );
+  let recipe_hash = Hash32::sha3_256(&recipe);
+  let objects: Vec<ObjectRecord> = plan
+    .chunks
+    .into_iter()
+    .map(|chunk| ObjectRecord {
+      hash: chunk.hash,
+      kind: ObjectKind::Chunk,
+      decoded_len: u64::from(chunk.raw_len),
+      codec: chunk.codec,
+      stored_bytes: chunk.payload.unwrap_or_default(),
+    })
+    .collect();
+
+  let store = RusqliteStore::from_connection_with_namespace(conn, namespace).map_err(nerr)?;
+  // Concurrent writers (the async pool) need each asset to land as one unit.
+  conn.execute_batch("BEGIN IMMEDIATE").map_err(nerr)?;
+  let write = || -> Result<()> {
+    store.put_objects_batch(&objects).map_err(nerr)?;
+    store.put_recipe(recipe_hash, &recipe, Codec::Raw).map_err(nerr)?;
+    conn
+      .execute(
+        &format!(
+          "INSERT INTO {0}_asset_keys(key, recipe_hash, file_hash, size, updated_at)
+           VALUES(?1, ?2, ?3, ?4, ?5)
+           ON CONFLICT(key) DO UPDATE SET
+             recipe_hash=?2, file_hash=?3, size=?4, updated_at=?5",
+          namespace
+        ),
+        params![key, recipe_hash.to_hex(), file_hash.to_hex(), size as i64, now_millis()],
+      )
+      .map_err(nerr)?;
+    Ok(())
+  };
+  if let Err(error) = write() {
+    conn.execute_batch("ROLLBACK").map_err(nerr)?;
+    return Err(error);
+  }
+  conn.execute_batch("COMMIT").map_err(nerr)?;
+  Ok(file_hash.to_hex())
+}
+
 fn aux_schema(ns: &str) -> String {
   format!(
     "CREATE TABLE IF NOT EXISTS {ns}_asset_keys(
@@ -96,9 +171,9 @@ fn aux_schema(ns: &str) -> String {
 #[napi]
 pub struct SqliteVault {
   conn: Connection,
+  db_path: String,
   namespace: String,
   config: FileTransformConfig,
-  transforms: TransformSelector,
 }
 
 #[napi]
@@ -109,15 +184,12 @@ impl SqliteVault {
     conn.execute_batch("PRAGMA journal_mode=WAL;").map_err(nerr)?;
     conn.busy_timeout(Duration::from_millis(5000)).map_err(nerr)?;
     let namespace = sanitize_namespace(namespace.as_deref().unwrap_or("default"));
-    RusqliteStore::from_connection_with_namespace(&conn, &namespace).map_err(nerr)?;
-    conn.execute_batch(&aux_schema(&namespace)).map_err(nerr)?;
-    let config = FileTransformConfig::default();
-    let transforms = transform_selector(&config);
+    ensure_schema(&conn, &namespace)?;
     Ok(Self {
       conn,
+      db_path,
       namespace,
-      config,
-      transforms,
+      config: FileTransformConfig::default(),
     })
   }
 
@@ -127,58 +199,24 @@ impl SqliteVault {
 
   /// Store bytes under a logical key. Returns the SHA3-256 content hash (hex).
   ///
-  /// `extension` is a hint for the transform/compression pipeline; when omitted
-  /// it is sniffed from the leading bytes.
+  /// Prefer [`Self::put_asset_async`]: precomp2 can take seconds per large
+  /// asset and this form blocks the event loop.
   #[napi]
   pub fn put_asset(&mut self, key: String, data: Buffer, extension: Option<String>) -> Result<String> {
-    let bytes = data.to_vec();
-    let size = bytes.len();
-    let file_hash = Hash32::sha3_256(&bytes);
-    let hint = file_hint(&bytes, extension.as_deref());
-    let plan = Pipeline::new(PipelineConfig::default())
-      .run(bytes, &hint, file_hash, Some(&self.transforms))
-      .map_err(nerr)?;
+    write_asset(&self.conn, &self.namespace, &key, data.to_vec(), extension.as_deref())
+  }
 
-    let chunk_list: Vec<(Hash32, u32)> = plan.chunks.iter().map(|c| (c.hash, c.raw_len)).collect();
-    let recipe = build_recipe(
-      plan.original_size,
-      &chunk_list,
-      file_hash,
-      plan.transform_id,
-      plan.transform_version,
-    );
-    let recipe_hash = Hash32::sha3_256(&recipe);
-    let objects: Vec<ObjectRecord> = plan
-      .chunks
-      .into_iter()
-      .map(|chunk| ObjectRecord {
-        hash: chunk.hash,
-        kind: ObjectKind::Chunk,
-        decoded_len: u64::from(chunk.raw_len),
-        codec: chunk.codec,
-        stored_bytes: chunk.payload.unwrap_or_default(),
-      })
-      .collect();
-
-    let store = self.store()?;
-    store.put_objects_batch(&objects).map_err(nerr)?;
-    store.put_recipe(recipe_hash, &recipe, Codec::Raw).map_err(nerr)?;
-
-    self
-      .conn
-      .execute(
-        &format!(
-          "INSERT INTO {0}_asset_keys(key, recipe_hash, file_hash, size, updated_at)
-           VALUES(?1, ?2, ?3, ?4, ?5)
-           ON CONFLICT(key) DO UPDATE SET
-             recipe_hash=?2, file_hash=?3, size=?4, updated_at=?5",
-          self.namespace
-        ),
-        params![key, recipe_hash.to_hex(), file_hash.to_hex(), size as i64, now_millis()],
-      )
-      .map_err(nerr)?;
-
-    Ok(file_hash.to_hex())
+  /// Store bytes on the libuv thread pool, so several assets compress in
+  /// parallel without blocking Node.
+  #[napi]
+  pub fn put_asset_async(&self, key: String, data: Buffer, extension: Option<String>) -> AsyncTask<PutAssetTask> {
+    AsyncTask::new(PutAssetTask {
+      db_path: self.db_path.clone(),
+      namespace: self.namespace.clone(),
+      key,
+      bytes: data.to_vec(),
+      extension,
+    })
   }
 
   #[napi]
@@ -285,5 +323,32 @@ impl SqliteVault {
       )
       .map_err(nerr)?;
     Ok(changed > 0)
+  }
+}
+
+/// One asset write, executed on the libuv thread pool.
+pub struct PutAssetTask {
+  db_path: String,
+  namespace: String,
+  key: String,
+  bytes: Vec<u8>,
+  extension: Option<String>,
+}
+
+impl Task for PutAssetTask {
+  type Output = String;
+  type JsValue = String;
+
+  fn compute(&mut self) -> Result<Self::Output> {
+    let conn = Connection::open(&self.db_path).map_err(nerr)?;
+    conn.execute_batch("PRAGMA journal_mode=WAL;").map_err(nerr)?;
+    conn.busy_timeout(Duration::from_millis(30_000)).map_err(nerr)?;
+    ensure_schema(&conn, &self.namespace)?;
+    let bytes = std::mem::take(&mut self.bytes);
+    write_asset(&conn, &self.namespace, &self.key, bytes, self.extension.as_deref())
+  }
+
+  fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+    Ok(output)
   }
 }

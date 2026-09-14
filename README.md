@@ -48,6 +48,12 @@ const vault = new SqliteVault('app.db', 'iv_main')
 const contentHash = vault.putAsset('provider:character:variant', pngBytes, 'png')
 const same = vault.getAsset('provider:character:variant') // Buffer | null
 
+// precomp2 can take seconds per large asset, so import through the async form:
+// it runs on the libuv thread pool and several puts overlap.
+await Promise.all(urls.map((url, i) =>
+  vault.putAssetAsync(`asset:${i}`, bytes[i], 'png'),
+))
+
 // index snapshot persisted next to assets
 vault.putSnapshot('default', index.sequence(), snapshot)
 const restored = SearchIndex.fromCheckpoint(undefined, vault.getSnapshot('default'))
@@ -93,6 +99,7 @@ class SearchIndex {
 class SqliteVault {
   constructor(dbPath: string, namespace?: string)
   putAsset(key: string, data: Buffer, extension?: string): string  // returns content hash (hex)
+  putAssetAsync(key: string, data: Buffer, extension?: string): Promise<string>  // thread-pool backed
   getAsset(key: string): Buffer | null
   hasAsset(key: string): boolean
   deleteAsset(key: string): boolean
@@ -104,7 +111,9 @@ class SqliteVault {
 ```
 
 The vault sets `journal_mode=WAL` and `busy_timeout=5000` on its connection, so it
-can safely coexist with another connection to the same file.
+can safely coexist with another connection to the same file. `putAssetAsync`
+opens its own short-lived connection per task, which is what makes concurrent
+writes safe (each asset lands in one `BEGIN IMMEDIATE` transaction).
 
 ## Building from source
 
