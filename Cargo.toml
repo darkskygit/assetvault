@@ -32,5 +32,10 @@ precomp2 = ["dep:assetpack-transform-precomp2"]
 
 [profile.release]
 codegen-units = 1
-lto           = true
-strip         = "symbols"
+lto           = "fat"
+opt-level     = "z"
+strip         = true
+
+# Keep build scripts / C dependencies (sqlite, zstd) at full speed.
+[profile.release.build-override]
+opt-level = 3

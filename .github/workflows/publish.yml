@@ -65,7 +65,12 @@ jobs:
     - uses: actions/upload-artifact@v4
       with:
         name: bindings-${{ matrix.target }}
-        path: "*.node"
+        # index.js / index.d.ts are the napi loader + typings; without them the
+        # published package would ship bare .node files with no entry point.
+        path: |
+          *.node
+          index.js
+          index.d.ts
         if-no-files-found: error
 
   publish:
@@ -79,17 +84,23 @@ jobs:
         node-version: 22
         registry-url: "https://registry.npmjs.org"
 
+    # Trusted Publishing (OIDC) requires npm >= 11.5.1; the runner image ships
+    # an older npm.
+    - name: use latest npm
+      run: npm install -g npm@latest
+
     - uses: actions/download-artifact@v4
       with:
         pattern: bindings-*
         path: bindings
         merge-multiple: true
 
-    - name: collect .node files
+    - name: collect package files
       shell: bash
       run: |
         cp bindings/*.node .
-        ls -la *.node
+        cp bindings/index.js bindings/index.d.ts .
+        ls -la *.node index.js index.d.ts
 
     - name: set version
       if: ${{ inputs.version != '' }}
