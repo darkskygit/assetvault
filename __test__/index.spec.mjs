@@ -10,26 +10,47 @@ import { join } from "node:path";
 const require = createRequire(import.meta.url);
 const { SearchIndex, SqliteVault } = require("../index.js");
 
-// --- full-text search index ---
+const hits = (json) => JSON.parse(json).hits;
+
+// --- default schema: one index-only `content` field ---
 const index = new SearchIndex();
 index.upsert("cn", JSON.stringify({ content: "你好世界 memory-indexer" }));
 index.upsert("en", JSON.stringify({ content: "fuzzy search handles typos" }));
 assert.equal(index.len(), 2);
 
-assert.equal(JSON.parse(index.search("nihao")).hits[0].id, "cn");
-assert.equal(JSON.parse(index.search("fuzzy")).hits[0].id, "en");
-
-const highlighted = JSON.parse(index.search("nihao", JSON.stringify({ highlight: true })));
-assert.ok(highlighted.hits[0].highlights.content.length > 0, "highlight spans");
+assert.equal(hits(index.search("nihao"))[0].id, "cn", "pinyin");
+assert.equal(hits(index.search("nhs"))[0].id, "cn", "pinyin initials");
+assert.equal(hits(index.search("你好"))[0].id, "cn");
+assert.equal(hits(index.search("search"))[0].id, "en");
+// index-only: no stored payload is returned unless asked for
+assert.deepEqual(hits(index.search("你好"))[0].fields, {});
 
 const snapshot = index.checkpoint();
 const restored = SearchIndex.fromCheckpoint(undefined, snapshot);
 assert.equal(restored.len(), 2);
-assert.equal(JSON.parse(restored.search("nihao")).hits[0].id, "cn");
+assert.equal(hits(restored.search("nihao"))[0].id, "cn");
 
 index.delete(["en"]);
 assert.equal(index.len(), 1);
 assert.throws(() => index.upsert("bad", JSON.stringify({ nope: "x" })), /unknown field/);
+
+// --- stored + positions: highlight and stored values are optional features ---
+const rich = new SearchIndex(
+  JSON.stringify({
+    fields: [
+      { name: "content", type: "text", pinyin: true, prefix: true, positions: true, stored: true },
+      { name: "tag", type: "keyword", stored: true },
+    ],
+  }),
+);
+rich.upsert("a", JSON.stringify({ content: "你好世界", tag: "cn" }));
+
+const spanned = hits(rich.search("nihao", JSON.stringify({ highlight: true })));
+assert.ok(spanned[0].highlights.content.length > 0, "highlight spans");
+
+const withFields = hits(rich.search("nihao", JSON.stringify({ storedFields: true })));
+assert.equal(withFields[0].fields.content, "你好世界");
+assert.equal(withFields[0].fields.tag, "cn");
 
 // --- asset vault (shares a SQLite file) ---
 const dir = mkdtempSync(join(tmpdir(), "assetvault-"));

@@ -18,6 +18,8 @@ struct FieldDef {
   #[serde(rename = "type")]
   ty: String,
   #[serde(default)]
+  stored: bool,
+  #[serde(default)]
   pinyin: bool,
   #[serde(default)]
   prefix: bool,
@@ -37,10 +39,11 @@ fn default_fields() -> Vec<FieldDef> {
   vec![FieldDef {
     name: "content".into(),
     ty: "text".into(),
+    stored: false,
     pinyin: true,
     prefix: true,
-    fuzzy: true,
-    positions: true,
+    fuzzy: false,
+    positions: false,
   }]
 }
 
@@ -61,6 +64,14 @@ fn build_schema(schema_json: Option<&str>) -> std::result::Result<(Schema, HashM
   let mut first_text: Option<FieldId> = None;
 
   for field in &fields {
+    // Only `stored` fields are kept in the index snapshot; everything else is
+    // index-only, which keeps checkpoints small when the caller already owns
+    // the source text (e.g. in SQLite).
+    let opts = if field.stored {
+      FieldOptions::indexed_stored()
+    } else {
+      FieldOptions::new().indexed()
+    };
     let id = match field.ty.as_str() {
       "text" => {
         let mut text = TextOptions::multilingual();
@@ -76,15 +87,15 @@ fn build_schema(schema_json: Option<&str>) -> std::result::Result<(Schema, HashM
         if field.positions {
           text = text.with_positions();
         }
-        let id = builder.text(field.name.as_str(), text, FieldOptions::indexed_stored());
-        if first_text.is_none() {
+        let id = builder.text(field.name.as_str(), text, opts);
+        if field.name == "content" || first_text.is_none() {
           first_text = Some(id);
         }
         id
       }
-      "keyword" => builder.keyword(field.name.as_str(), FieldOptions::indexed_stored()),
-      "i64" => builder.i64(field.name.as_str(), FieldOptions::indexed_stored().sortable()),
-      "bool" => builder.bool(field.name.as_str(), FieldOptions::indexed_stored().sortable()),
+      "keyword" => builder.keyword(field.name.as_str(), opts),
+      "i64" => builder.i64(field.name.as_str(), opts.sortable()),
+      "bool" => builder.bool(field.name.as_str(), opts.sortable()),
       other => return Err(format!("unknown field type: {other}")),
     };
     ids.insert(field.name.clone(), id);
@@ -133,13 +144,15 @@ fn parse_mode(mode: Option<&str>) -> SearchMode {
 }
 
 #[derive(Deserialize, Default)]
-#[serde(default)]
+#[serde(default, rename_all = "camelCase")]
 struct SearchOpts {
   field: Option<String>,
   mode: Option<String>,
   limit: Option<usize>,
   offset: Option<usize>,
   highlight: Option<bool>,
+  /// Return the stored values of matched documents (default: ids/scores only).
+  stored_fields: Option<bool>,
 }
 
 fn serialize_result(schema: &Schema, result: &SearchResult) -> serde_json::Value {
@@ -274,7 +287,9 @@ impl SearchIndex {
 
     let mut search = SearchOptions::new(options.limit.unwrap_or(10));
     search.offset = options.offset.unwrap_or(0);
-    search.stored_fields = self.stored_fields.clone();
+    if options.stored_fields.unwrap_or(false) {
+      search.stored_fields = self.stored_fields.clone();
+    }
     if options.highlight.unwrap_or(false) {
       search.highlight_fields = vec![field];
     }
@@ -323,4 +338,3 @@ impl SearchIndex {
     Ok(())
   }
 }
-
